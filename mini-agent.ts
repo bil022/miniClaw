@@ -12,7 +12,8 @@
  *   2. Pull the model: ollama pull qwen2.5-coder:7b-instruct
  *
  * Usage:
- *   bun miniClaw/mini-agent.ts
+ *   bun miniClaw/mini-agent.ts                          # terminal REPL
+ *   TELEGRAM_BOT_TOKEN=123:abc bun miniClaw/mini-agent.ts  # Telegram bot
  *
  * Then chat interactively. Try:
  *   "what time is it?"              → calls current_time
@@ -25,6 +26,7 @@
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { Bot } from "grammy";
 
 // ─── Section 1: Types ────────────────────────────────────────────────────────
 //
@@ -356,6 +358,8 @@ async function streamOllama(messages: OllamaMessage[]): Promise<string> {
 
 // ─── The Agent Loop ──────────────────────────────────────────────────────────
 
+const MAX_TOOL_ITERATIONS = 10;
+
 async function agentLoop(
   userMessage: string,
   history: OllamaMessage[],
@@ -368,6 +372,12 @@ async function agentLoop(
   while (true) {
     iteration++;
     log(`--- loop iteration ${iteration} ---`);
+
+    if (iteration > MAX_TOOL_ITERATIONS) {
+      const bail = "I've hit the tool-call limit. Here's what I have so far.";
+      history.push({ role: "assistant", content: bail });
+      return bail;
+    }
 
     // Step 1: Call Ollama (non-streaming for reliable tool detection)
     const { content, toolCalls } = await callOllama(history);
@@ -419,14 +429,63 @@ async function agentLoop(
   }
 }
 
-// ─── Section 5: Interactive REPL ─────────────────────────────────────────────
+// ─── Section 5: Telegram Channel ─────────────────────────────────────────────
+//
+// OpenClaw equivalent: src/telegram/ wraps the same session.prompt() call with
+// Grammy's bot.on("message") handler. Each chat gets its own conversation
+// history so multiple users can talk to the bot concurrently.
+
+const TELEGRAM_MAX_LENGTH = 4096;
+
+function splitMessage(text: string): string[] {
+  if (text.length <= TELEGRAM_MAX_LENGTH) return [text];
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += TELEGRAM_MAX_LENGTH) {
+    chunks.push(text.slice(i, i + TELEGRAM_MAX_LENGTH));
+  }
+  return chunks;
+}
+
+async function startTelegram(token: string) {
+  const bot = new Bot(token);
+  const chatHistories = new Map<number, OllamaMessage[]>();
+
+  console.log(`Mini OpenClaw Telegram Bot (Ollama: ${MODEL})`);
+  console.log(`Debug: ${DEBUG ? "ON (DEBUG=1)" : "off (set DEBUG=1 to enable)"}`);
+
+  bot.command("start", (ctx) => ctx.reply("Hi! I'm a mini coding assistant powered by Ollama. Send me a message."));
+
+  bot.on("message:text", async (ctx) => {
+    const chatId = ctx.chat.id;
+    const history = chatHistories.get(chatId) ?? [];
+
+    try {
+      const response = await agentLoop(ctx.message.text, history);
+      chatHistories.set(chatId, history);
+
+      for (const chunk of splitMessage(response)) {
+        await ctx.reply(chunk);
+      }
+    } catch (err) {
+      await ctx.reply(`Error: ${(err as Error).message}`);
+    }
+  });
+
+  console.log("Starting Telegram bot (long-polling)...");
+  await bot.start({
+    onStart: (botInfo) =>
+      console.log(`Bot @${botInfo.username} is live — send it a message!`),
+  });
+}
+
+// ─── Section 6: Interactive REPL ─────────────────────────────────────────────
 //
 // OpenClaw equivalent: the CLI REPL lives in src/cli/ and routes user input
 // through commands, routing, and eventually into the agent loop. The web UI
 // and messaging channels (Telegram, Discord, etc.) each have their own input
 // paths that all converge on the same `session.prompt()` call.
 
-async function main() {
+async function startRepl() {
   console.log(`Mini OpenClaw Agent Loop (Ollama: ${MODEL})`);
   console.log(`Debug: ${DEBUG ? "ON (DEBUG=1)" : "off (set DEBUG=1 to enable)"}`);
   console.log('Type a message to chat, "quit" to exit.\n');
@@ -467,6 +526,16 @@ async function main() {
     }
     console.log(); // newline after streamed response
   }
+}
+
+// ─── Section 7: Entry Point ──────────────────────────────────────────────────
+
+async function main() {
+  const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (telegramToken) {
+    startTelegram(telegramToken); // fire-and-forget (long-polls in background)
+  }
+  await startRepl(); // always run the REPL
 }
 
 main().catch(console.error);
