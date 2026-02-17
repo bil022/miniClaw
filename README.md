@@ -57,9 +57,9 @@ The model decides when to call them. It can call multiple tools in a single turn
 
 No pairing or allowlist required — unlike the full OpenClaw bot, miniClaw responds to anyone who messages it.
 
-## Examples
+## Examples (partially tested)
 
-### Reading a file (*partially tested*)
+### Reading a file
 
 ```
 you> what's in package.json?

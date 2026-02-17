@@ -25,7 +25,9 @@
 
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 import { createInterface } from "node:readline";
+import { Agent } from "undici";
 import { Bot } from "grammy";
 
 // ─── Section 1: Types ────────────────────────────────────────────────────────
@@ -446,8 +448,26 @@ function splitMessage(text: string): string[] {
   return chunks;
 }
 
+function getInterfaceAddress(name: string): string {
+  const nets = networkInterfaces();
+  const iface = nets[name];
+  if (!iface) throw new Error(`Network interface ${name} not found`);
+  const ipv4 = iface.find((i) => i.family === "IPv4" && !i.internal);
+  if (!ipv4) throw new Error(`No IPv4 address found on ${name}`);
+  return ipv4.address;
+}
+
 async function startTelegram(token: string) {
-  const bot = new Bot(token);
+  const TELEGRAM_INTERFACE = process.env.TELEGRAM_INTERFACE ?? "en1";
+  const localAddress = getInterfaceAddress(TELEGRAM_INTERFACE);
+  console.log(`Binding Telegram traffic to ${TELEGRAM_INTERFACE} (${localAddress})`);
+
+  const dispatcher = new Agent({ connect: { localAddress } });
+  const bot = new Bot(token, {
+    client: {
+      baseFetchConfig: { dispatcher } as RequestInit,
+    },
+  });
   const chatHistories = new Map<number, OllamaMessage[]>();
 
   console.log(`Mini OpenClaw Telegram Bot (Ollama: ${MODEL})`);
